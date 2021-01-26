@@ -124,11 +124,20 @@ class MuScatMicroscopeSim(tf.keras.Model):
         # filter scattered field by objective pupil
         FiltScatteredField = tf.reshape(
             self.FiltByObjectivePupil(ScatteredField),
-            [-1, self.gridSize[1], self.gridSize[2]])
+            [-1, 1, 1, self.gridSize[1], self.gridSize[2]])
 
         # reference waves are illumination plane waves at z=0
         # and transversally shifted in relation to illumination plane waves
-        referenceWaves = self.planeWaves
+        referenceWaves = tf.exp(
+            tf.complex(tf.cast(0., tf.float32), 2 * np.pi *
+                       (tf.reshape(self.KtIllum[:, 0], [-1, 1, 1, 1, 1]) *
+                        (tf.reshape(self.realxx, [1, 1, 1, self.gridSize[1],
+                                                  self.gridSize[2]]) -
+                         tf.reshape(refShifts[:, 0], [1, -1, 1, 1, 1])) +
+                        tf.reshape(self.KtIllum[:, 1], [-1, 1, 1, 1, 1]) *
+                        (tf.reshape(self.realyy, [1, 1, 1, self.gridSize[1],
+                                                  self.gridSize[2]]) -
+                         tf.reshape(refShifts[:, 1], [1, -1, 1, 1, 1])))))
 
         # apply defocus related to the illumination of volumetric sample
         propagatedIllum = FiltScatteredField * tf.exp(tf.complex(

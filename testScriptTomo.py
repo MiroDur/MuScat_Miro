@@ -41,7 +41,7 @@ imagingSim.Detection()
 fieldMeasured = MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(
     imagedObject, method='MLB')
 # fieldMeasured.ComputeMuScat(imagedObject, method='MLB')
-zStackMeasured = imagingSim.TomoImaging(fieldMeasured)
+TomoMeasured = imagingSim.TomoImaging(fieldMeasured)
 
 print(time.time()-start)
 # %%
@@ -62,8 +62,8 @@ def regTV(variable, parameter):
 
 
 @tf.function
-def loss_fn(zStackSimulated, zStackMeasured):
-    return tf.reduce_mean(tf.abs(zStackMeasured - zStackSimulated)**2) #+\
+def loss_fn(TomoSimulated, TomoMeasured):
+    return tf.reduce_mean(tf.abs(TomoMeasured - TomoSimulated)**2) #+\
         #regularizer(optimizedObject.RIDistrib)
 
 # scatteredField = MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(optimizedObject, method='MLB')
@@ -71,7 +71,7 @@ def loss_fn(zStackSimulated, zStackMeasured):
 
 loss = lambda: loss_fn(imagingSim.TomoImaging(
     MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(
-        optimizedObject, method='MLB')), zStackMeasured)
+        optimizedObject, method='MLB')), TomoMeasured)
 lossF = []
 
 for i in range(10):
@@ -81,7 +81,7 @@ for i in range(10):
         optimizedObject.RIDistrib[:, centerInd, :],
         aspect=parameters.dz/parameters.dx))
     plt.subplot(122), plt.colorbar(plt.imshow(
-        np.angle(zStackMeasured[0, :, centerInd, :]),
+        imagedObject.RIDistrib[:, centerInd, :],
         aspect=parameters.dz/parameters.dx))
     plt.tight_layout(pad=3.0)
     plt.show()
