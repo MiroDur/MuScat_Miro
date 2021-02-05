@@ -64,9 +64,11 @@ class MuScatMicroscopeSim(tf.keras.Model):
             tf.pow(self.Kxx, 2) - tf.pow(self.Kyy, 2)
         self.KzzM = tf.sqrt(self.KzzSq * tf.cast(self.KzzSq >= 0, tf.float32))
 
-    def Illumination(self):
+    def Illumination(self, HollowCone=0.):
+
         self.condenserPupil = tf.cast(
-            (self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) < self.NAc,
+            ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) < self.NAc) &
+            ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) > HollowCone),
             tf.float32)
 
         # calculate spatial frequencies of illumination plane waves

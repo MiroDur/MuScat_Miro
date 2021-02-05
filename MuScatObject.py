@@ -5,6 +5,7 @@ Created on Mon Sep 21 13:57:18 2020
 @author: Miro
 """
 import tensorflow as tf
+import numpy as np
 # from phantominator import shepp_logan
 
 
@@ -93,6 +94,22 @@ class MuScatObject(tf.keras.Model):
             tf.cast(tf.sqrt(tf.pow(self.realxxx, 2) + tf.pow(self.realyyy, 2) +
                             tf.pow(self.realzzz - separation / 2, 2)) < radius,
                     tf.float32)) * (refrIndex - self.refrIndexM)
+
+    def GenerateElipsoidNP(self, a, b, c, center, refrIndex):
+        RIdistrib = np.array(self.RIDistrib)
+        RIdistrib[((self.realxxx - center[1])**2 / a**2 +
+                  (self.realyyy - center[2])**2 / b**2 +
+                  (self.realzzz - center[0])**2 / c**2) < 1] = (
+                      refrIndex - self.refrIndexM)
+        self.RIDistrib = tf.constant(RIdistrib)
+
+    def GenerateSphereNP(self, radius, center, refrIndex):
+        RIdistrib = np.array(self.RIDistrib)
+        RIdistrib[((self.realxxx - center[1])**2 +
+                  (self.realyyy - center[2])**2 +
+                  (self.realzzz - center[0])**2) < radius] = (
+                      refrIndex - self.refrIndexM)
+        self.RIDistrib = tf.constant(RIdistrib)
 
     # def GenerateSheppLogan(self, refrIndex):
     #     self.RIDistrib = tf.cast(tf.constant(shepp_logan(self.gridSize) * \
