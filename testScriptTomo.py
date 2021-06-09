@@ -38,10 +38,21 @@ imagingSim = MuScatMicroscopeSim(parameters)
 
 imagingSim.Illumination()
 imagingSim.Detection()
+imagingSim.ComputeAbberation(1,1,1,1,1,1,1,1,1,1,1)
 fieldMeasured = MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(
     imagedObject, method='MLB')
 # fieldMeasured.ComputeMuScat(imagedObject, method='MLB')
 TomoMeasured = imagingSim.TomoImaging(fieldMeasured)
+centerIllum = np.int32(imagingSim.planeWavesNum/2)
+plt.figure(11)
+plt.subplot(121), plt.colorbar(plt.imshow(
+        np.angle(TomoMeasured[centerIllum, :, :]),
+        aspect=parameters.dz/parameters.dx))
+plt.subplot(122), plt.colorbar(plt.imshow(
+        np.abs(TomoMeasured[centerIllum, :, :]),
+        aspect=parameters.dz/parameters.dx))
+plt.tight_layout(pad=3.0)
+plt.show()
 
 print(time.time()-start)
 # %%
@@ -74,7 +85,7 @@ loss = lambda: loss_fn(imagingSim.TomoImaging(
         optimizedObject, method='MLB')), TomoMeasured)
 lossF = []
 
-for i in range(10):
+for i in range(0):
     opt_op = opt.minimize(loss, var_list=[optimizedObject.RIDistrib])
     plt.figure(1)
     plt.subplot(121), plt.colorbar(plt.imshow(

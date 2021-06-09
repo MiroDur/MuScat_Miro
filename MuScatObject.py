@@ -10,7 +10,7 @@ import numpy as np
 
 
 class MuScatObject(tf.keras.Model):
-    def __init__(self, parameters, **kwargs):
+    def __init__(self, parameters, initial_value=0., min_value=-0.08, max_value=0.08, **kwargs):
         super().__init__(**kwargs)
         # initilize parameters from the object parameters
         self.lambda0 = parameters.lambda0
@@ -20,6 +20,9 @@ class MuScatObject(tf.keras.Model):
         self.dz = parameters.dz
         self.refrIndexM = parameters.refrIndexM
         self.lambdaM = self.lambda0 / self.refrIndexM
+        self.initial_value = initial_value 
+        self.min_value = min_value 
+        self.max_value = max_value 
         self.ComputeGrids()
 
     def __call__(self, *args, **kwargs):
@@ -63,11 +66,8 @@ class MuScatObject(tf.keras.Model):
         self.mask = tf.cast(self.KzzM * self.dz <= 0., tf.float32)
 
         self.RIDistrib = tf.Variable(
-            tf.zeros(self.gridSize, tf.float32),
-            constraint=tf.keras.constraints.MinMaxNorm(min_value=-0.08,
-                                                       max_value=0.08,
-                                                       rate=1.0,
-                                                       axis=0))
+            tf.ones(self.gridSize, tf.float32) * self.initial_value,
+            constraint=lambda t: tf.clip_by_value(t, self.min_value, self.max_value))
 
     def GenerateBead(self, radius, refrIndex):
         self.RIDistrib = tf.cast(tf.sqrt(

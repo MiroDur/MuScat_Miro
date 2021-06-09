@@ -17,27 +17,29 @@ tf.config.set_visible_devices([], 'GPU')
 # %%
 start = time.time()
 parameters = MuScatParameters(lambda0=0.650,         # wavelength in vacuum
-                              gridSize=[50, 32, 32],  # gridSize [z, x ,y]
-                              dx=0.45,          # dx
-                              dy=0.45,          # dy
+                              gridSize=[40, 40, 40],  # gridSize [z, x ,y]
+                              dx=0.2,          # dx
+                              dy=0.2,          # dy
                               dz=0.3,           # dz
                               refrIndexM=1.5,           # refr index in medium
-                              NAc=0.5,           # NAc
-                              NAo=0.5)           # NAo
+                              NAc=0.7,           # NAc
+                              NAo=0.7)           # NAo
 centerInd = np.int32(parameters.gridSize[1] / 2)
 regLambdaL1 = 0.0001
 regLambdaL2 = 0.000
 learnRate = 0.01
-refShifts = tf.cast(tf.constant([[0., 0.]]), tf.float32)
+refShifts = tf.cast(tf.constant([[0.0, 0.]]), tf.float32)
 imagedObject = MuScatObject(parameters)
 # imagedObject.GenerateBox(4., 4., 4., 1.52)
-imagedObject.GenerateBead(3., 1.52)
+imagedObject.GenerateBead(1.5, 1.52)
 # imagedObject.GenerateSheppLogan(1.55)
 
 imagingSim = MuScatMicroscopeSim(parameters)
 
-imagingSim.Illumination()
+imagingSim.Illumination(HollowCone=0., sampling=1)
 imagingSim.Detection()
+imagingSim.ComputeAbberation(0.,0.,0.,4.,0.,0.,0.0,0.,0.,0.,0.,0.,0.,0.)
+
 zPositions = imagedObject.realzzz[::2, 0, 0] - imagedObject.realzzz[0, 0, 0]
 fieldMeasured = MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(
     imagedObject, method='MLB')
@@ -45,6 +47,20 @@ fieldMeasured = MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(
 zStackMeasured = imagingSim.CCHMImaging(fieldMeasured,
                                         zPositions,
                                         refShifts)
+
+plt.figure(11)
+plt.subplot(121),plt.colorbar(plt.imshow(
+    np.angle(zStackMeasured[0, :, centerInd, :]),
+    aspect=parameters.dz/parameters.dx))
+plt.title('Measured phase')
+plt.subplot(122),plt.colorbar(plt.imshow(
+    np.abs(zStackMeasured[0, :, centerInd, :]),
+    aspect=parameters.dz/parameters.dx))
+plt.title('Measured amplitude')
+plt.show()
+
+plt.figure(12)
+plt.figure(6),plt.imshow(np.log(np.abs(np.fft.fftshift(np.fft.fftn(np.squeeze(zStackMeasured[0, :, centerInd, :]))))))
 print(time.time()-start)
 # %%
 optimizedObject = MuScatObject(parameters)
@@ -76,7 +92,7 @@ loss = lambda: loss_fn(imagingSim.CCHMImaging(
         optimizedObject, method='MLB'), zPositions, refShifts), zStackMeasured)
 lossF = []
 
-for i in range(10):
+for i in range(0):
     opt_op = opt.minimize(loss, var_list=[optimizedObject.RIDistrib])
     plt.figure(1)
     plt.subplot(121), plt.colorbar(plt.imshow(

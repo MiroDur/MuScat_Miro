@@ -90,7 +90,7 @@ class MuScatField(tf.keras.Model):
             tf.signal.ifftshift((-1j * tf.exp(tf.complex(
                 tf.cast(0., tf.float32),
                 2 * np.pi * MuScatObject.KzzM * MuScatObject.dz)) /
-                tf.complex((4 * np.pi * MuScatObject.KzzM) + MuScatObject.mask,
+                tf.complex((4 * np.pi * MuScatObject.KzzM + 1e-07 ) + MuScatObject.mask,
                            0.)) * tf.complex(1 - MuScatObject.mask, 0.)),
             [1, self.gridSize[1], self.gridSize[2]])
 

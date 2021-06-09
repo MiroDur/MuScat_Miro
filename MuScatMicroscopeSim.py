@@ -6,7 +6,7 @@ Created on Tue Sep 22 11:42:53 2020
 """
 import tensorflow as tf
 import numpy as np
-
+import zernike1 as zern
 
 class MuScatMicroscopeSim(tf.keras.Model):
 
@@ -26,7 +26,9 @@ class MuScatMicroscopeSim(tf.keras.Model):
         self.refrIndexM = parameters.refrIndexM
         self.lambdaM = self.lambda0 / self.refrIndexM
         self.ComputeGrids()
-
+        self.ComputeZernike()
+        self.ZernikeCoefficients = parameters.ZernikeCoefficients
+        
     def __call__(self, MuScatObject, *args, **kwargs):
 
         return
@@ -64,23 +66,35 @@ class MuScatMicroscopeSim(tf.keras.Model):
             tf.pow(self.Kxx, 2) - tf.pow(self.Kyy, 2)
         self.KzzM = tf.sqrt(self.KzzSq * tf.cast(self.KzzSq >= 0, tf.float32))
 
-    def Illumination(self, HollowCone=0.):
-
+    def Illumination(self, HollowCone=0., sampling=1):
+        self.illumSampling = sampling
         self.condenserPupil = tf.cast(
             ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) < self.NAc) &
-            ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) > HollowCone),
+            ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) >= HollowCone),
             tf.float32)
 
         # calculate spatial frequencies of illumination plane waves
-        self.KxxIllum = self.Kxx * self.condenserPupil
-        self.KyyIllum = self.Kyy * self.condenserPupil
+        self.KxxIllum = self.Kxx[::sampling, ::sampling] * \
+            self.condenserPupil[::sampling, ::sampling]
+        self.KyyIllum = self.Kyy[::sampling, ::sampling] * \
+            self.condenserPupil[::sampling, ::sampling]
 
         self.KtIllum = tf.stack(
-            [self.KxxIllum[tf.not_equal(self.condenserPupil, 0)],
-             self.KyyIllum[tf.not_equal(self.condenserPupil, 0)]], 1)
-        self.Kzillum = tf.reshape(
-            self.KzzM[tf.not_equal(self.condenserPupil, 0)], [-1, 1, 1])
-
+            [self.KxxIllum[tf.not_equal(
+                self.condenserPupil[::sampling, ::sampling], 0.)],
+             self.KyyIllum[tf.not_equal(
+                 self.condenserPupil[::sampling, ::sampling], 0.)]], 1)
+        KzzMsampled = self.KzzM[::sampling, ::sampling]
+        self.Kzillum = tf.reshape(KzzMsampled[tf.not_equal(
+            self.condenserPupil[::sampling, ::sampling], 0.)], [-1, 1, 1])
+        
+        # Apodization - Debye approximation + sine condition
+        
+        self.apodization2D = 1 / tf.sqrt(self.lambdaM * KzzMsampled + 1e-7)
+        self.apodizationNotNull = self.apodization2D[tf.not_equal(
+            self.condenserPupil[:: self.illumSampling,
+                                :: self.illumSampling], 0.)]
+        
         # calculate illumination plane waves
         self.planeWaves = tf.exp(
             tf.complex(tf.cast(0., tf.float32), 2 * np.pi * (
@@ -88,16 +102,36 @@ class MuScatMicroscopeSim(tf.keras.Model):
                 tf.reshape(self.KtIllum[:, 1], [-1, 1, 1]) * self.realyy)))
 
         self.planeWavesNum = self.planeWaves.get_shape().as_list()[0]
-
+        
+        self.illumIntensity = tf.cast(tf.reduce_sum(tf.math.abs(
+            self.apodizationNotNull)**4, axis=None), tf.complex64)
+        
     def Detection(self):
         # create objective pupil function
         self.objectivePupil = tf.cast(
             (self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) <
             self.NAo, tf.float32)
-
+        # Apodization - Debye approximation + sine condition
+        
+        self.apodizationObj2D = 1 / tf.sqrt(self.lambdaM * self.KzzM + 1e-7)
+        self.apodizationObjNotNull = self.apodizationObj2D[tf.not_equal(
+                self.objectivePupil, 0.)]
+        
+        self.objectivePupilApod = self.objectivePupil * self.apodizationObj2D
+        
+    def ComputeZernike(self):
+        self.xxPupil = self.lambda0 * self.Kxx / self.NAc
+        self.yyPupil = self.lambda0 * self.Kyy / self.NAc
+        r, theta = zern.cart2pol(self.yyPupil, self.xxPupil)
+        self.ZernikePolynomial = []     
+        for i in range(1,12):
+            self.ZernikePolynomial.append(zern.zernike(r, theta, i))
+        self.ZernikePolynomial = tf.constant(self.ZernikePolynomial,
+                                             tf.float32)
+        
     def FiltByObjectivePupil(self, field):
         return tf.signal.ifft2d(tf.signal.fft2d(field) * tf.reshape(
-            tf.signal.ifftshift(tf.cast(self.objectivePupil, tf.complex64)),
+            tf.signal.ifftshift(tf.cast(self.objectivePupilApod, tf.complex64)),
             [1, self.gridSize[1], self.gridSize[2]]))
 
     def CCHMImaging(self, ScatteredField, zPositions, refShifts):
@@ -127,11 +161,21 @@ class MuScatMicroscopeSim(tf.keras.Model):
         FiltScatteredField = tf.reshape(
             self.FiltByObjectivePupil(ScatteredField),
             [-1, 1, 1, self.gridSize[1], self.gridSize[2]])
-
+        
+        # CCHM apodization due to HIGH NA (Debye approx + sine condition)
+        self.apodizationCCHM = tf.complex(self.apodization2D**2 * self.apodizationObj2D,
+            tf.cast(0., tf.float32)) * tf.reduce_prod(tf.exp(tf.complex(tf.cast(0., tf.float32), self.ZernikePolynomial * tf.reshape(self.ZernikeCoefficients, [-1, 1 ,1]))), 0)
+        self.apodizationCCHMNotNull = self.apodizationCCHM[tf.not_equal(
+            self.condenserPupil[:: self.illumSampling,
+                                :: self.illumSampling], 0.)]
+        self.apodizationCCHMNotNull = tf.reshape(
+            self.apodizationCCHMNotNull, [-1, 1, 1, 1, 1])
+        self.intensity = tf.reduce_sum(tf.squeeze(self.apodizationCCHMNotNull) * tf.cast(self.apodizationObj2D[tf.not_equal(
+            self.condenserPupil, 0.)], tf.complex64))
+        
         # reference waves are illumination plane waves at z=0
         # and transversally shifted in relation to illumination plane waves
-        referenceWaves = tf.exp(
-            tf.complex(tf.cast(0., tf.float32), 2 * np.pi *
+        referenceWaves = tf.exp(tf.complex(tf.cast(0., tf.float32), 2 * np.pi *
                        (tf.reshape(self.KtIllum[:, 0], [-1, 1, 1, 1, 1]) *
                         (tf.reshape(self.realxx, [1, 1, 1, self.gridSize[1],
                                                   self.gridSize[2]]) -
@@ -160,8 +204,9 @@ class MuScatMicroscopeSim(tf.keras.Model):
         # returns summed up interference of scattered fields and
         # reference waves
 
-        zStack = tf.reduce_sum(propagatedFields * tf.math.conj(referenceWaves),
-                               0) / self.planeWavesNum
+        zStack = tf.reduce_sum(self.apodizationCCHMNotNull * \
+                               propagatedFields * tf.math.conj(referenceWaves),
+                               0) / self.intensity
 
         return zStack
 
@@ -189,21 +234,26 @@ class MuScatMicroscopeSim(tf.keras.Model):
             [-1, self.gridSize[1], self.gridSize[2]])
 
         # reference waves are illumination plane waves at z=0
-        # and transversally shifted in relation to illumination plane waves
         referenceWaves = self.planeWaves
-
+        
+         # CCHM apodization due to HIGH NA (Debye approx + sine condition)
+        self.apodizationCCHM = self.apodization2D**2 * self.apodizationObj2D
+        self.apodizationCCHMNotNull = self.apodizationCCHM[tf.not_equal(
+            self.condenserPupil[:: self.illumSampling,
+                                :: self.illumSampling], 0.)]
+        self.apodizationCCHMNotNull = tf.complex(tf.reshape(
+            self.apodizationCCHMNotNull, [-1, 1, 1]),
+            tf.cast(0., tf.float32))
         # apply defocus related to the illumination of volumetric sample
         propagatedIllum = FiltScatteredField * tf.exp(tf.complex(
             tf.cast(0., tf.float32),
             -2 * np.pi * tf.reshape(self.Kzillum, [-1, 1, 1]) *
-            tf.reshape(self.realzzz[0, 0, 0], [-1, 1, 1])))
+            tf.reshape(self.realzzz[-1,0,0], [-1, 1, 1])))
 
         # propagate all fields for each illumination plane wave
         # to z-stack positions
         propagator = tf.signal.ifftshift(tf.exp(tf.complex(
-            tf.cast(0., tf.float32), 2 * np.pi * self.KzzM * (
-                -((self.gridSize[0]) * self.dz -
-                  tf.reshape(0., [-1, 1, 1]))))), (1, 2))
+            tf.cast(0., tf.float32), 2 * np.pi * self.KzzM * (tf.reshape(-((self.gridSize[0]) * self.dz - self.realzzz[-1, 0, 0]), [-1, 1, 1])))), (1, 2))
 
         propagatedFields = tf.signal.ifft2d(
             tf.signal.fft2d(propagatedIllum) * propagator)
@@ -211,6 +261,6 @@ class MuScatMicroscopeSim(tf.keras.Model):
         # returns summed up interference of scattered fields and
         # reference waves
 
-        TomoImages = propagatedFields * tf.math.conj(referenceWaves)
+        TomoImages = self.apodizationCCHMNotNull * propagatedFields * tf.math.conj(referenceWaves)
 
         return TomoImages
