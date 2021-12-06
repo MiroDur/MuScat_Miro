@@ -213,6 +213,8 @@ class MuScatMicroscopeSim(tf.keras.Model):
         
         # tikhonov regularization
         self.deconvPotential = tf.signal.fftshift(tf.signal.ifft3d(tf.math.conj(tf.signal.ifftshift(self.CTF_3D))*(tf.signal.fft3d(tf.signal.ifftshift(self.scatteredField))/self.gridSize[0]/self.dz)/(tf.signal.ifftshift(self.CTF_3D)*tf.math.conj(tf.signal.ifftshift(self.CTF_3D))+regParam)))
+        RIDiff = tf.sqrt(tf.abs(self.deconvPotential) * self.lambda0**2 /
+                         np.pi + self.refrIndexM**2) - self.refrIndexM
         
         return RIDiff
     
