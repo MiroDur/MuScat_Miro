@@ -99,9 +99,46 @@ class MuScatField(tf.keras.Model):
                 MuScatObject.RIDistrib[layer, :, :],
                 MuScatObject) + self.Propagate(MuScatObject, MuScatObject.dz)
         return self.field
+    
+    def PinholeScattering(self, MuScatObject):
+        
+        pinhole = np.ones((self.gridSize[1],self.gridSize[2])) * 0.
+        pinhole[np.int32(self.gridSize[1]/2), np.int32(self.gridSize[2]/2)] = 1.
+        pinhole = tf.cast(pinhole, tf.complex64)
+        
+        for layer in range(MuScatObject.gridSize[0]):
+            if layer == np.int32(self.gridSize[0]/2):
+                self.field = self.field * tf.reshape(
+                    pinhole, [1, self.gridSize[1], self.gridSize[2]])    
+                print(np.abs(pinhole[16:18,16:18]))
+            self.Propagate(MuScatObject, MuScatObject.dz)
+        return self.field
+    
+    def SingleScatteringBorn(self, MuScatObject):
+        scatteringPotential = tf.complex64((2 * np.pi / self.lambda0)**2 * (
+            MuScatObject.refrIndexM**2 - (MuScatObject.refrIndexM + MuScatObject.RIDistrib)**2))
+        scatteringFunction = tf.signal.fftshift(
+            tf.signal.fft3d(scatteringPotential))
+        incidentField = self.field
+        scatteredField = tf.constant(tf.zeros(tf.shape(self.field),
+                                              tf.complex64))
+        for layer in range(MuScatObject.gridSize[0]):
+            scatteredField = scatteredField + self.ConvolveWithGreen(
+                MuScatObject.RIDistrib[layer, :, :],
+                MuScatObject)
+            
+        self.field = incidentField    
+        for layer in range(MuScatObject.gridSize[0]):
+            incidentField = self.Propagate(MuScatObject, MuScatObject.dz)
+            
+        return incidentField + scatteredField
 
     def ComputeMuScat(self, MuScatObject, method='MLB'):
         if method == 'MLB':
             return self.MultipleScatteringMLB(MuScatObject)
         elif method == 'MS':
             return self.MultipleScatteringMS(MuScatObject)
+        elif method == 'SingleBorn':
+            return self.SingleScatteringBorn(MuScatObject)
+        elif method == 'Pinhole':
+            return self.PinholeScattering(MuScatObject)

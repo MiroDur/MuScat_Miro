@@ -66,13 +66,15 @@ class MuScatMicroscopeSim(tf.keras.Model):
             tf.pow(self.Kxx, 2) - tf.pow(self.Kyy, 2)
         self.KzzM = tf.sqrt(self.KzzSq * tf.cast(self.KzzSq >= 0, tf.float32))
 
-    def Illumination(self, HollowCone=0., sampling=1):
+    def Illumination(self, HollowCone=0., sampling=1, shift=[0,0]):
         self.illumSampling = sampling
         self.condenserPupil = tf.cast(
             ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) < self.NAc) &
             ((self.lambda0 * tf.sqrt(self.Kxx**2 + self.Kyy**2)) >= HollowCone),
             tf.float32)
-
+        self.pupilShift = shift
+        self.condenserPupilShifted = tf.roll(self.condenserPupil,self.pupilShift,[0,1])
+        self.ZernikePolynomial = tf.roll(self.ZernikePolynomial,self.pupilShift,[1,2])
         # calculate spatial frequencies of illumination plane waves
         self.KxxIllum = self.Kxx[::sampling, ::sampling] * \
             self.condenserPupil[::sampling, ::sampling]
@@ -90,11 +92,13 @@ class MuScatMicroscopeSim(tf.keras.Model):
         
         # Apodization - Debye approximation + sine condition
         
-        self.apodization2D = 1 / tf.sqrt(self.lambdaM * KzzMsampled + 1e-7)
+        self.apodization2D = tf.sqrt(self.lambdaM * KzzMsampled + 1e-7)
+        
         self.apodizationNotNull = self.apodization2D[tf.not_equal(
             self.condenserPupil[:: self.illumSampling,
                                 :: self.illumSampling], 0.)]
-        
+        self.apodization2D = tf.roll(self.apodization2D,self.pupilShift,[0,1])
+
         # calculate illumination plane waves
         self.planeWaves = tf.exp(
             tf.complex(tf.cast(0., tf.float32), 2 * np.pi * (
@@ -113,7 +117,7 @@ class MuScatMicroscopeSim(tf.keras.Model):
             self.NAo, tf.float32)
         # Apodization - Debye approximation + sine condition
         
-        self.apodizationObj2D = 1 / tf.sqrt(self.lambdaM * self.KzzM + 1e-7)
+        self.apodizationObj2D = tf.sqrt(self.lambdaM * self.KzzM + 1e-7)
         self.apodizationObjNotNull = self.apodizationObj2D[tf.not_equal(
                 self.objectivePupil, 0.)]
         
@@ -128,12 +132,90 @@ class MuScatMicroscopeSim(tf.keras.Model):
             self.ZernikePolynomial.append(zern.zernike(r, theta, i))
         self.ZernikePolynomial = tf.constant(self.ZernikePolynomial,
                                              tf.float32)
+
         
     def FiltByObjectivePupil(self, field):
         return tf.signal.ifft2d(tf.signal.fft2d(field) * tf.reshape(
             tf.signal.ifftshift(tf.cast(self.objectivePupilApod, tf.complex64)),
             [1, self.gridSize[1], self.gridSize[2]]))
 
+    def Compute3DCTF(self, refShifts):
+        
+        # CCHM apodization due to HIGH NA (Debye approx + sine condition)
+        self.apodizationCCHM = tf.complex(self.apodization2D**3 ,
+            tf.cast(0., tf.float32)) * tf.reduce_prod(tf.exp(tf.complex(tf.cast(0., tf.float32), self.ZernikePolynomial * tf.reshape(self.ZernikeCoefficients, [-1, 1 ,1]))), 0) * \
+            tf.complex(self.condenserPupilShifted, tf.cast(0., tf.float32))
+        self.apodizationCCHMNotNull = self.apodizationCCHM[tf.not_equal(
+            self.condenserPupilShifted[:: self.illumSampling,
+                                :: self.illumSampling], 0.)]
+        self.intensity = tf.reduce_sum(tf.squeeze(self.apodizationCCHMNotNull) * tf.cast(self.apodization2D[tf.not_equal(
+            self.condenserPupilShifted, 0.)], tf.complex64))
+        self.SPupil = tf.reverse(tf.math.conj(
+                tf.reshape(self.apodizationCCHM, [1, self.gridSize[1], self.gridSize[2]]) * tf.exp(tf.complex(tf.cast(0., tf.float32), 2 * np.pi * tf.reshape(-tf.reshape(self.Kxx * refShifts[0, 0] + self.Kyy * refShifts[0,1], [1, self.gridSize[1], self.gridSize[2]]) + self.KzzM, [1, self.gridSize[1], self.gridSize[2]]) * tf.reshape(self.realzzz[:,0,0], [-1, 1, 1])))),[1,2])
+        self.PPupil = tf.math.conj(tf.complex(tf.reshape(self.objectivePupil, [1, self.gridSize[1], self.gridSize[2]]), tf.cast(0., tf.float32)) * tf.exp(tf.complex(tf.cast(0., tf.float32), -2 * np.pi * tf.reshape(self.KzzM, [1, self.gridSize[1], self.gridSize[2]]) * tf.reshape(self.realzzz[:,0,0], [-1, 1, 1]))))
+        self.Sfunc = tf.signal.fft2d(tf.signal.fftshift(self.SPupil))#/ tf.cast(tf.reduce_sum(self.apodizationNotNull), tf.complex64)#/(self.gridSize[1]*self.gridSize[2])
+        self.Pfunc = tf.signal.fft2d(tf.signal.fftshift(self.PPupil))#/ tf.cast(tf.reduce_sum(self.apodizationObjNotNull), tf.complex64)#/(self.gridSize[1]*self.gridSize[2])
+        self.CTF_2D = tf.signal.ifftshift(tf.signal.ifft2d(self.Sfunc * self.Pfunc)) /self.intensity#* (self.gridSize[1]*self.gridSize[2])
+        self.invKzzM = tf.complex(tf.reshape(1/(self.KzzM+1e-7)* tf.cast(self.KzzSq >= 0, tf.float32), [1, self.gridSize[1], self.gridSize[2]]),tf.cast(0., tf.float32))
+        self.CTF_3D = 1j*self.invKzzM*tf.transpose(tf.signal.fftshift(tf.signal.fft(tf.signal.fftshift(tf.transpose(self.CTF_2D, perm=[1,2,0]), axes=2)), axes=2),[2,0,1]) /self.gridSize[0] #/self.intensity #/self.gridSize[0] #
+    
+    def CCHMconvolution(self, MuScatObject):
+        """
+        Generate images at defined Z positions for each reference obj. shift.
+
+        Indexing order: [refShift, zPos, xCoor, yCoor]
+
+        Parameters
+        ----------
+        MuScatObject : Contains 3D RI distribution
+
+        Returns
+        -------
+        zStack : Complex64 4D-Tensor
+            [refShift, zPos, xCoor, yCoor]
+
+        """
+        #1/ self.lambda0 * MuScatObject.refrIndexM
+        #self.deltaFuncz = np.zeros(self.gridSize)
+        #self.deltaFuncz[np.int32(self.gridSize[0]/2),:,:] = 1.
+        #self.deltaFuncz = tf.constant(self.deltaFuncz, tf.complex64)/self.dz
+        
+        
+        self.scatteringPotential = tf.complex(np.pi*(1/ self.lambda0)**2 * ( 
+            -self.refrIndexM**2 + (self.refrIndexM + MuScatObject.RIDistrib)**2),tf.cast(0., tf.float32))
+        self.scatteringFunction = tf.signal.fftshift(
+            tf.signal.fft3d(tf.signal.fftshift(self.scatteringPotential)))*self.gridSize[0]*self.dz #/(self.gridSize[0]*self.gridSize[1]*self.gridSize[2])*(self.dx*self.dy*self.dz) 
+        #self.scatteredFieldBorn =  tf.signal.ifftshift(tf.signal.ifft3d(tf.signal.ifftshift(self.scatteringFunction)))
+        #self.scatteringFunctionCCHM = tf.signal.fftshift(
+        #    tf.signal.fft3d(tf.signal.fftshift(self.scatteredFieldBorn)))
+        
+        #tf.transpose(tf.signal.fftshift(tf.signal.fft(tf.signal.fftshift(tf.transpose(self.CTF_2D, perm=[1,2,0]), axes=2)), axes=2),[2,0,1])
+        self.convPotential = tf.signal.fftshift(tf.signal.ifft3d(tf.signal.ifftshift(self.CTF_3D * self.scatteringFunction)))
+        #self.deconv = tf.signal.fftshift(tf.signal.ifft3d(tf.signal.fft3d(tf.signal.ifftshift(self.convPotential))/tf.signal.ifftshift(((self.lambdaM)**2 *self.CTF_3D+1e-4))))
+        return tf.complex(tf.cast(1.,tf.float32), tf.cast(0.,tf.float32))+self.convPotential#*(self.gridSize[0]*self.gridSize[1]*self.gridSize[2])
+    
+    def CCHMdeconvolution(self, zStack, regParam=1e-3):
+        """
+        Compute deconvolution of zStack with microscope 3D psf
+
+        Parameters
+        ----------
+        zStack : Complex64 3D-Tensor
+            Measurement or output of simulation
+
+        Returns
+        -------
+        scattteringPotential: Complex64 3D-Tensor
+
+        """
+        # remove background from zStack
+        self.scatteredField = zStack - tf.complex(tf.cast(1.,tf.float32), tf.cast(0.,tf.float32))
+        
+        # tikhonov regularization
+        self.deconvPotential = tf.signal.fftshift(tf.signal.ifft3d(tf.math.conj(tf.signal.ifftshift(self.CTF_3D))*(tf.signal.fft3d(tf.signal.ifftshift(self.scatteredField))/self.gridSize[0]/self.dz)/(tf.signal.ifftshift(self.CTF_3D)*tf.math.conj(tf.signal.ifftshift(self.CTF_3D))+regParam)))
+        
+        return RIDiff
+    
     def CCHMImaging(self, ScatteredField, zPositions, refShifts):
         """
         Generate images at defined Z positions for each reference obj. shift.

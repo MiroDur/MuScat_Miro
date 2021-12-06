@@ -17,30 +17,31 @@ tf.config.set_visible_devices([], 'GPU')
 # %%
 start = time.time()
 parameters = MuScatParameters(lambda0=0.650,         # wavelength in vacuum
-                              gridSize=[40, 40, 40],  # gridSize [z, x ,y]
+                              gridSize=[40, 64, 64],  # gridSize [z, x ,y]
                               dx=0.2,          # dx
                               dy=0.2,          # dy
                               dz=0.3,           # dz
                               refrIndexM=1.5,           # refr index in medium
                               NAc=0.7,           # NAc
-                              NAo=0.7)           # NAo
+                              NAo=1.0)           # NAo
+                                
 centerInd = np.int32(parameters.gridSize[1] / 2)
 regLambdaL1 = 0.0001
 regLambdaL2 = 0.000
 learnRate = 0.01
-refShifts = tf.cast(tf.constant([[0.0, 0.]]), tf.float32)
+refShifts = tf.cast(tf.constant([[0.0, 0.0]]), tf.float32)
 imagedObject = MuScatObject(parameters)
-# imagedObject.GenerateBox(4., 4., 4., 1.52)
-imagedObject.GenerateBead(1.5, 1.52)
+#imagedObject.GenerateBox(3., 3., 3., 1.505)
+imagedObject.GenerateBead(1.5, 1.51)
 # imagedObject.GenerateSheppLogan(1.55)
 
 imagingSim = MuScatMicroscopeSim(parameters)
 
-imagingSim.Illumination(HollowCone=0., sampling=1)
+imagingSim.Illumination(HollowCone=0.0, sampling=1, shift=[0,1])
 imagingSim.Detection()
-imagingSim.ComputeAbberation(0.,0.,0.,4.,0.,0.,0.0,0.,0.,0.,0.,0.,0.,0.)
-
-zPositions = imagedObject.realzzz[::2, 0, 0] - imagedObject.realzzz[0, 0, 0]
+zernCoef = tf.Variable([[0., 0., 0., 0., 0., 0., -0.0, -0.0, 0., 0., 0.]], tf.float32)
+imagingSim.ZernikeCoefficients = zernCoef;
+zPositions = imagedObject.realzzz[::1, 0, 0] - imagedObject.realzzz[0, 0, 0]
 fieldMeasured = MuScatField(imagingSim.planeWaves, parameters).ComputeMuScat(
     imagedObject, method='MLB')
 # fieldMeasured.ComputeMuScat(imagedObject, method='MLB')
@@ -59,8 +60,21 @@ plt.subplot(122),plt.colorbar(plt.imshow(
 plt.title('Measured amplitude')
 plt.show()
 
+imagingSim.Compute3DCTF(refShifts)
+deconvPot = imagingSim.CCHMdeconvolution(zStackMeasured[0,:,:,:],1e-2)
+plt.figure(13)
+plt.subplot(121),plt.colorbar(plt.imshow(
+    np.angle(deconvPot[:, centerInd, :]),
+    aspect=parameters.dz/parameters.dx))
+plt.title('Deconv Potential phase')
+plt.subplot(122),plt.colorbar(plt.imshow(
+    np.abs(deconvPot[ :, centerInd, :]),
+    aspect=parameters.dz/parameters.dx))
+plt.title('Deconv Potential amplitude')
+plt.show()
+
 plt.figure(12)
-plt.figure(6),plt.imshow(np.log(np.abs(np.fft.fftshift(np.fft.fftn(np.squeeze(zStackMeasured[0, :, centerInd, :]))))))
+plt.figure(6),plt.colorbar(plt.imshow(np.log(np.abs(np.fft.fftshift(np.fft.fftn(np.squeeze(zStackMeasured[0, :, centerInd, :])))))))
 print(time.time()-start)
 # %%
 optimizedObject = MuScatObject(parameters)
